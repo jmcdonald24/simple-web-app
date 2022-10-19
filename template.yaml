@@ -1,0 +1,145 @@
+---
+# Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  This template creates a sample web application using Amazon API Gateway and AWS Lambda to display the client IP address.
+  
+  **WARNING** This template creates an Amazon API Gateway, AWS Lambda function and related resources. You will be billed for 
+  the AWS resources used if you create a stack from this template.
+
+Parameters:
+
+  APIGatewayName:
+    Type: String
+    Description: Name of the Amazon API Gateway
+    Default: SampleAPI
+
+  APIGatewayStageName:
+    Type: String
+    Description: Name of the Amazon API Gateway stage of deployment
+    AllowedPattern: "[A-Za-z0-9]+"
+    Default: Test
+
+Resources:
+  APIGateway: 
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: Example Amazon API Gateway serving up AWS Lambda provided HTML content
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Name: !Ref APIGatewayName
+
+  APIGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: APIGatewayMethod
+    Properties:
+      RestApiId: !Ref APIGateway
+      StageName: !Ref APIGatewayStageName
+  
+  APIGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - LambdaFunction
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFunction.Arn}/invocations
+      ResourceId: !GetAtt APIGateway.RootResourceId
+      RestApiId: !Ref APIGateway
+  
+  LambdaFunction:
+    # Python Lambda function that returns the client IP address.  
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: !Sub |
+          def handler(event,context):
+
+            html_text = '<html>'
+            html_text += '<head><meta charset="utf-8">'
+            html_text += '<style>.myH1 {text-align: left; font-size:x-large; font-family: sans-serif;}'
+            html_text += '.ptext {text-align: left; font-size:medium; font-family: sans-serif; font-color: white}</style>'
+            html_text += '<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">'
+            html_text += '</head>'
+            html_text += '<body style="background-color:grey">'
+            html_text += '<img src="https://d1.awsstatic.com/logos/aws-logo-lockups/poweredbyaws/PB_AWS_logo_RGB.61d334f1a1a427ea597afa54be359ca5a5aaad5f.png" width="540" height="95" alt="Powered by AWS">'
+            html_text += '<h1 class="myH1">'
+            html_text += 'Your IPv4 address is: {0}'.format(event['requestContext']['identity']['sourceIp'])
+            html_text += '</h1>'
+            html_text += '<p class="ptext">'
+            html_text += 'This page is served from your ${APIGatewayStageName} environment'
+            html_text += '</p>'
+            html_text += '</div>'
+            html_text += '</body>'
+            html_text += '</html>'
+
+            return {
+              'body': html_text,
+              'headers': {
+                'Content-Type': 'text/html'
+              },
+              'statusCode': 200
+            }
+      Description: Example AWS Lambda function that returns client IP in a web page
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt LambdaIAMRole.Arn
+      Runtime: python3.9
+
+  LambdaIAMRole:
+    # Role for the Lambda function.  Only needs permissions to write logs to the log group
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
+          PolicyName: lambda
+
+  LambdaPermission:
+    # This is required to allow API Gateway to invoke the Lambda function
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: 
+        !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${APIGateway}/*/GET/*
+
+
+Outputs:
+  APIGatewayInvokeURL:
+    Value: !Sub "https://${APIGateway}.execute-api.${AWS::Region}.amazonaws.com/${APIGatewayStageName}"
